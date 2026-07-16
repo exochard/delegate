@@ -1,0 +1,29 @@
+{
+  "name": "delegate",
+  "description": "Claude stays mastermind and reviewer while opencode does the grunt implementation work, in an isolated git worktree, for a fraction of the cost. Claude reviews, verifies, and decides accept/reject/iterate — nothing merges without an explicit accept.",
+  "version": "0.1.0",
+  "author": {
+    "name": "clochard04",
+    "email": "peppecastellos245@icloud.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "delegate",
+    "opencode",
+    "worktree",
+    "cost-optimization",
+    "code-review",
+    "verification",
+    "mcp",
+    "multi-agent"
+  ],
+  "commands": [
+    "./commands/"
+  ],
+  "mcpServers": {
+    "delegate": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/delegate-server/src/index.js"]
+    }
+  }
+}

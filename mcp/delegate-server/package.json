@@ -1,0 +1,17 @@
+{
+  "name": "delegate-server",
+  "version": "0.1.0",
+  "description": "MCP server backing the Delegate Claude Code plugin: manages opencode worker sessions, git worktrees, and verification.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
