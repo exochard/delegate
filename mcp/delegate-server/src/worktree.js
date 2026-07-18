@@ -3,9 +3,14 @@ import { promisify } from "node:util";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
+import { resolveWorker } from "./worker.js";
+
 const execFileAsync = promisify(execFile);
 
 const MAX_DIFF_CHARS = 50_000;
+// Excludes delegate's own bookkeeping file from every diff/stat/commit pathspec below —
+// it configures the worker's permissions, it's not part of the task's own change.
+const EXCLUDE_WORKER_CONFIG = `:!${resolveWorker().WORKER_CONFIG_FILENAME}`;
 
 async function git(cwd, args) {
   try {
@@ -49,13 +54,13 @@ export async function createWorktree(repoRoot, sessionId) {
 }
 
 async function hasUncommittedChanges(worktreePath) {
-  const status = await git(worktreePath, ["status", "--porcelain"]);
+  const status = await git(worktreePath, ["status", "--porcelain", "--", ".", EXCLUDE_WORKER_CONFIG]);
   return status.trim().length > 0;
 }
 
 async function commitPendingChanges(worktreePath, message) {
   if (!(await hasUncommittedChanges(worktreePath))) return false;
-  await git(worktreePath, ["add", "-A"]);
+  await git(worktreePath, ["add", "-A", "--", ".", EXCLUDE_WORKER_CONFIG]);
   await git(worktreePath, ["commit", "-m", message]);
   return true;
 }
@@ -63,9 +68,9 @@ async function commitPendingChanges(worktreePath, message) {
 export async function getWorktreeDiff(worktreePath) {
   // --intent-to-add marks untracked files so they show up in `git diff HEAD`
   // as new-file diffs, without actually staging their content.
-  await git(worktreePath, ["add", "-A", "-N"]);
-  const stat = await git(worktreePath, ["diff", "HEAD", "--stat"]);
-  let patch = await git(worktreePath, ["diff", "HEAD"]);
+  await git(worktreePath, ["add", "-A", "-N", "--", ".", EXCLUDE_WORKER_CONFIG]);
+  const stat = await git(worktreePath, ["diff", "HEAD", "--stat", "--", ".", EXCLUDE_WORKER_CONFIG]);
+  let patch = await git(worktreePath, ["diff", "HEAD", "--", ".", EXCLUDE_WORKER_CONFIG]);
   let truncated = false;
   if (patch.length > MAX_DIFF_CHARS) {
     patch = `${patch.slice(0, MAX_DIFF_CHARS)}\n...[diff truncated, ${patch.length} chars total]`;

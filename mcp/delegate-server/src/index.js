@@ -1,56 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import * as state from "./state.js";
 import * as worktreeMod from "./worktree.js";
 import * as verifyMod from "./verify.js";
-import * as opencodeMod from "./opencode.js";
-
-const DEFAULT_CONFIG = {
-  defaultModel: null,
-  maxIterations: 3,
-  verifyCommand: null,
-  workerPermissions: {
-    bash: true,
-    read: true,
-    edit: true,
-    glob: true,
-    grep: true,
-    webfetch: false,
-    task: false,
-    todowrite: true,
-    websearch: false,
-    lsp: true,
-    skill: false,
-  },
-};
-
-function configPath(repoRoot) {
-  return path.join(repoRoot, ".claude", "delegate", "config.json");
-}
-
-async function loadConfig(repoRoot) {
-  try {
-    const raw = await readFile(configPath(repoRoot), "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_CONFIG,
-      ...parsed,
-      workerPermissions: { ...DEFAULT_CONFIG.workerPermissions, ...(parsed.workerPermissions ?? {}) },
-    };
-  } catch (err) {
-    if (err.code === "ENOENT") return { ...DEFAULT_CONFIG };
-    throw err;
-  }
-}
-
-async function saveConfig(repoRoot, config) {
-  await mkdir(path.dirname(configPath(repoRoot)), { recursive: true });
-  await writeFile(configPath(repoRoot), JSON.stringify(config, null, 2));
-}
+import * as reportMod from "./report.js";
+import { loadConfig, saveConfig } from "./config.js";
+import { resolveWorker } from "./worker.js";
 
 function truncate(text, max = 4000) {
   if (text.length <= max) return text;
@@ -74,27 +32,32 @@ function summarizeVerification(result) {
   };
 }
 
-async function withOpencodeClient() {
-  const baseUrl = await opencodeMod.ensureServer();
-  return opencodeMod.createApiClient(baseUrl);
-}
-
-async function refreshCostFromOpencode(repoRoot, session) {
+async function refreshCostFromWorker(repoRoot, session, worker) {
   try {
-    const client = await withOpencodeClient();
-    const oc = await client.getSession({
+    const { cost, tokens } = await worker.exportSession({
       directory: session.worktreePath,
       sessionId: session.opencodeSessionId,
     });
     return state.updateSession(repoRoot, session.id, {
-      cost: oc.cost ?? session.cost,
-      tokens: oc.tokens ?? session.tokens,
+      cost: cost ?? session.cost,
+      tokens: tokens ?? session.tokens,
     });
   } catch {
-    // Cost refresh is best-effort — opencode session metadata not being reachable
-    // shouldn't block the caller from seeing the rest of the session state.
+    // Cost refresh is best-effort — opencode's export not being reachable shouldn't
+    // block the caller from seeing the rest of the session state.
     return session;
   }
+}
+
+function slugFromSession(session) {
+  return path.basename(session.taskFile, ".md");
+}
+
+function statusAfterVerification(verification, iteration, maxIterations) {
+  if (verification.allPassed === false) {
+    return iteration >= maxIterations ? "needs-human" : "running";
+  }
+  return "ready-to-accept";
 }
 
 async function requireSession(repoRoot, id) {
@@ -114,26 +77,33 @@ server.registerTool(
   {
     title: "Start a delegated task",
     description:
-      "Create an isolated git worktree, start an opencode worker session scoped to it, send the task, and run verification once. Returns the session, the diff, and the verification result for Claude to judge.",
+      "Create an isolated git worktree, write the task to .delegate/<field>/<task>.md, run the opencode worker once, and run verification. Returns the session, the diff, and the verification result for Claude to judge.",
     inputSchema: {
       repoRoot: z.string().optional().describe("Target repo root. Defaults to the current working directory."),
       task: z.string().describe("The task description to hand to the opencode worker."),
+      field: z.string().optional().describe("Category for this task, e.g. \"backend\" or \"docs\". Groups files under .delegate/<field>/. Defaults to \"general\"."),
       model: z.string().optional().describe("provider/model override. Defaults to the project's configured default model."),
       maxIterations: z.number().int().positive().optional().describe("Override the configured max feedback iterations for this session."),
     },
   },
-  async ({ repoRoot: repoRootInput, task, model, maxIterations }) => {
+  async ({ repoRoot: repoRootInput, task, field = "general", model, maxIterations }) => {
     const repoRoot = resolveRepoRoot(repoRootInput);
     await worktreeMod.assertGitRepo(repoRoot);
     const config = await loadConfig(repoRoot);
+    const worker = resolveWorker(config.worker);
     const effectiveModel = model ?? config.defaultModel ?? null;
 
     const sessionId = state.newSessionId();
     const { worktreePath, branchName } = await worktreeMod.createWorktree(repoRoot, sessionId);
+    const slug = await reportMod.chooseSlug(repoRoot, field, task, sessionId);
+    const { taskPath, reportPath } = await reportMod.writeInitialTaskFile({ repoRoot, field, slug, task });
 
     let session = await state.createSession(repoRoot, {
       id: sessionId,
       task,
+      field,
+      taskFile: taskPath,
+      reportFile: reportPath,
       worktreePath,
       branchName,
       model: effectiveModel,
@@ -141,48 +111,43 @@ server.registerTool(
     });
 
     try {
-      const client = await withOpencodeClient();
-      const parsedModel = opencodeMod.parseModel(effectiveModel);
-      const permission = opencodeMod.permissionRulesetFromConfig(config.workerPermissions);
+      worker.parseModel(effectiveModel); // throws on a malformed model string
+      await worker.writeWorkerConfig({ directory: worktreePath, workerPermissions: config.workerPermissions });
 
-      const ocSession = await client.createSession({
+      const baseline = await reportMod.snapshotReport({ repoRoot, field, slug });
+      const run = await worker.run({
         directory: worktreePath,
-        title: task.slice(0, 80),
-        model: parsedModel ?? undefined,
-        permission,
+        taskFilePath: taskPath,
+        model: effectiveModel,
+        delegateSessionId: sessionId,
       });
-
-      session = await state.updateSession(repoRoot, sessionId, { opencodeSessionId: ocSession.id });
-
-      await client.sendMessage({
-        directory: worktreePath,
-        sessionId: ocSession.id,
-        text: task,
-        model: parsedModel ?? undefined,
-      });
+      session = await state.updateSession(repoRoot, sessionId, { opencodeSessionId: run.sessionId });
 
       const verification = await verifyMod.runVerification(worktreePath, { verifyCommand: config.verifyCommand });
+      const reportResult = await reportMod.finalizeReportRound({ repoRoot, field, slug, round: 1, baseline, verification });
       const diff = await worktreeMod.getWorktreeDiff(worktreePath);
 
-      const newStatus =
-        verification.allPassed === false
-          ? session.iteration + 1 >= session.maxIterations
-            ? "needs-human"
-            : "running"
-          : "ready-to-accept";
-
       session = await state.updateSession(repoRoot, sessionId, {
-        iteration: session.iteration + 1,
-        status: newStatus,
+        iteration: 1,
+        status: statusAfterVerification(verification, 1, session.maxIterations),
         lastVerification: { pass: verification.allPassed, output: summarizeVerification(verification), at: new Date().toISOString() },
       });
-      session = await refreshCostFromOpencode(repoRoot, session);
+      session = await refreshCostFromWorker(repoRoot, session, worker);
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ session, verification: summarizeVerification(verification), diff }, null, 2),
+            text: JSON.stringify(
+              {
+                session,
+                verification: summarizeVerification(verification),
+                diff,
+                report: { path: reportResult.reportPath, workerReportMissing: reportResult.workerReportMissing, workerExcerpt: reportResult.workerExcerpt },
+              },
+              null,
+              2
+            ),
           },
         ],
       };
@@ -201,7 +166,7 @@ server.registerTool(
   {
     title: "Send feedback to a delegated task",
     description:
-      "Send another instruction into an existing opencode worker session (e.g. after a failed verification), then re-run verification.",
+      "Append feedback to the session's task file (e.g. after a failed verification), re-run the opencode worker in the same session, then re-run verification.",
     inputSchema: {
       repoRoot: z.string().optional(),
       id: z.string().describe("The delegate session id."),
@@ -212,39 +177,60 @@ server.registerTool(
     const repoRoot = resolveRepoRoot(repoRootInput);
     let session = await requireSession(repoRoot, id);
     const config = await loadConfig(repoRoot);
-    const client = await withOpencodeClient();
-    const parsedModel = opencodeMod.parseModel(session.model);
+    const worker = resolveWorker(config.worker);
+    const slug = slugFromSession(session);
+    const nextIteration = session.iteration + 1;
 
-    await client.sendMessage({
+    const taskFilePath = await reportMod.appendFeedbackSection({
+      repoRoot,
+      field: session.field,
+      slug,
+      round: nextIteration,
+      message,
+    });
+    const baseline = await reportMod.snapshotReport({ repoRoot, field: session.field, slug });
+
+    const run = await worker.run({
       directory: session.worktreePath,
+      taskFilePath,
       sessionId: session.opencodeSessionId,
-      text: message,
-      model: parsedModel ?? undefined,
+      model: session.model,
+      delegateSessionId: session.id,
     });
 
     const verification = await verifyMod.runVerification(session.worktreePath, { verifyCommand: config.verifyCommand });
+    const reportResult = await reportMod.finalizeReportRound({
+      repoRoot,
+      field: session.field,
+      slug,
+      round: nextIteration,
+      baseline,
+      verification,
+    });
     const diff = await worktreeMod.getWorktreeDiff(session.worktreePath);
 
-    const nextIteration = session.iteration + 1;
-    const newStatus =
-      verification.allPassed === false
-        ? nextIteration >= session.maxIterations
-          ? "needs-human"
-          : "running"
-        : "ready-to-accept";
-
     session = await state.updateSession(repoRoot, id, {
+      opencodeSessionId: run.sessionId,
       iteration: nextIteration,
-      status: newStatus,
+      status: statusAfterVerification(verification, nextIteration, session.maxIterations),
       lastVerification: { pass: verification.allPassed, output: summarizeVerification(verification), at: new Date().toISOString() },
     });
-    session = await refreshCostFromOpencode(repoRoot, session);
+    session = await refreshCostFromWorker(repoRoot, session, worker);
 
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ session, verification: summarizeVerification(verification), diff }, null, 2),
+          text: JSON.stringify(
+            {
+              session,
+              verification: summarizeVerification(verification),
+              diff,
+              report: { path: reportResult.reportPath, workerReportMissing: reportResult.workerReportMissing, workerExcerpt: reportResult.workerExcerpt },
+            },
+            null,
+            2
+          ),
         },
       ],
     };
@@ -303,7 +289,8 @@ server.registerTool(
     const repoRoot = resolveRepoRoot(repoRootInput);
     if (id) {
       let session = await requireSession(repoRoot, id);
-      session = await refreshCostFromOpencode(repoRoot, session);
+      const config = await loadConfig(repoRoot);
+      session = await refreshCostFromWorker(repoRoot, session, resolveWorker(config.worker));
       return { content: [{ type: "text", text: JSON.stringify(session, null, 2) }] };
     }
     const sessions = await state.listSessions(repoRoot);
@@ -373,7 +360,7 @@ server.registerTool(
   "delegate_stop",
   {
     title: "Stop a running delegated task",
-    description: "Abort the opencode worker process for a session. Does not delete the worktree — the diff stays inspectable.",
+    description: "Abort the opencode worker process for a session, if one is currently running. Does not delete the worktree — the diff stays inspectable.",
     inputSchema: {
       repoRoot: z.string().optional(),
       id: z.string(),
@@ -382,10 +369,21 @@ server.registerTool(
   async ({ repoRoot: repoRootInput, id }) => {
     const repoRoot = resolveRepoRoot(repoRootInput);
     const session = await requireSession(repoRoot, id);
-    const client = await withOpencodeClient();
-    await client.abortSession({ directory: session.worktreePath, sessionId: session.opencodeSessionId });
-    const updated = await state.updateSession(repoRoot, id, { abortedAt: new Date().toISOString() });
-    return { content: [{ type: "text", text: JSON.stringify(updated, null, 2) }] };
+    const config = await loadConfig(repoRoot);
+    const stopped = resolveWorker(config.worker).abortRun(id);
+    const updated = stopped ? await state.updateSession(repoRoot, id, { abortedAt: new Date().toISOString() }) : session;
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            { stopped, session: updated, message: stopped ? "opencode run aborted" : "no opencode run was in flight for this session" },
+            null,
+            2
+          ),
+        },
+      ],
+    };
   }
 );
 
@@ -410,6 +408,7 @@ server.registerTool(
     description: "Merge the given fields into the project's delegate config and save it.",
     inputSchema: {
       repoRoot: z.string().optional(),
+      worker: z.string().optional().describe("Worker backend to run tasks with. Defaults to \"opencode\"."),
       defaultModel: z.string().nullable().optional(),
       maxIterations: z.number().int().positive().optional(),
       verifyCommand: z.string().nullable().optional(),
@@ -421,6 +420,7 @@ server.registerTool(
   },
   async ({ repoRoot: repoRootInput, ...patch }) => {
     const repoRoot = resolveRepoRoot(repoRootInput);
+    if (patch.worker !== undefined) resolveWorker(patch.worker); // throws on an unknown worker name
     const current = await loadConfig(repoRoot);
     const next = {
       ...current,
@@ -436,7 +436,7 @@ server.registerTool(
   "delegate_doctor",
   {
     title: "Check the delegate environment",
-    description: "Check that opencode is installed, the repo is a git repo, the opencode server is reachable, and report orphaned worktrees.",
+    description: "Check that opencode is installed, the repo is a git repo, and report orphaned worktrees.",
     inputSchema: { repoRoot: z.string().optional() },
   },
   async ({ repoRoot: repoRootInput }) => {
@@ -451,12 +451,10 @@ server.registerTool(
       report.gitRepoError = err.message;
     }
 
-    try {
-      const baseUrl = await opencodeMod.ensureServer();
-      report.opencodeServer = { reachable: true, baseUrl };
-    } catch (err) {
-      report.opencodeServer = { reachable: false, error: err.message };
-    }
+    const config = await loadConfig(repoRoot);
+    report.worker = config.worker;
+    // Kept under the `opencode` key: the slash commands and README read it by that name.
+    report.opencode = await resolveWorker(config.worker).checkInstalled();
 
     if (report.gitRepo) {
       const [worktrees, sessions] = await Promise.all([
@@ -475,11 +473,3 @@ server.registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-
-// The managed `opencode serve` child's stdout/stderr listeners (see opencode.js) keep this
-// process's event loop alive even after the MCP transport closes, so exit explicitly rather
-// than relying on natural event-loop drain.
-server.server.onclose = () => {
-  opencodeMod.shutdownServer();
-  process.exit(0);
-};

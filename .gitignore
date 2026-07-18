@@ -1,6 +1,7 @@
 node_modules/
 .claude/delegate/state/
 .claude/delegate/config.json
+.delegate/
 *.log
 
 # artifacts / agents

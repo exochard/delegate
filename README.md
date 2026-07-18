@@ -20,20 +20,24 @@ Run `/delegate:doctor` once you've installed everything — it'll tell you if an
 
 | Command | What it does |
 |---|---|
-| `/delegate "<task>" [--model provider/model]` | Kick off a task. Chain several with `\|` to fan them out into parallel worktrees. |
+| `/delegate "<task>" [--field name] [--model provider/model]` | Kick off a task. Chain several with `\|` to fan them out into parallel worktrees. |
 | `/delegate:status [id]` | List every session, or drill into one — status, iteration count, cost so far. |
 | `/delegate:diff <id>` | Show the session's current diff. |
 | `/delegate:feedback <id> "<message>"` | Send the worker another instruction (e.g. after a failed check) and re-verify. |
 | `/delegate:review <id>` | Re-run verification only — no new instructions sent. |
 | `/delegate:accept <id>` | Merge the session's branch in, drop the worktree. |
 | `/delegate:reject <id>` | Throw the worktree and branch away. Your main tree was never touched. |
-| `/delegate:stop <id>` | Kill the running opencode worker. The worktree sticks around so you can still inspect or resume it. |
+| `/delegate:stop <id>` | Kill the running opencode worker, if one's in flight. The worktree sticks around so you can still inspect or resume it. |
 | `/delegate:config [key=value ...]` | Read or change defaults: model, iteration cap, verify command, what the worker's allowed to touch. |
-| `/delegate:doctor` | Sanity check: is opencode installed, is this a git repo, is the server up, any stray worktrees lying around. |
+| `/delegate:doctor` | Sanity check: is opencode installed, is this a git repo, any stray worktrees lying around. |
 
 ## How it fits together
 
-Every task gets its own worktree and branch, sitting as a sibling directory next to your repo rather than nested inside it, plus its own opencode session scoped to that worktree under a permission profile you control (the worker has no network access by default — see `/delegate:config`). You send it the task, it writes code, and verification runs — your configured command if you've set one, otherwise whatever gets auto-detected from `package.json`, a `Makefile`, or a handful of common test runners. A green exit code by itself proves nothing; you're expected to read the actual output and the diff. If something's broken, feedback goes back into the same session with something specific to try, up to a cap you set — past that, it stops and waits for you.
+Every task gets its own worktree and branch, sitting as a sibling directory next to your repo rather than nested inside it, with a permission profile you control (the worker has no network access by default — see `/delegate:config`).
+
+The handoff itself is plain files, not an API call. Starting a task writes `.delegate/<field>/<task>.md` in your main repo — the instructions, plus where to write its own account of the work. `field` is just a category you pick (`backend`, `docs`, whatever groups your tasks sensibly) so related work doesn't scatter. opencode runs against that file once per round (`opencode run`, not a long-lived server), and is asked to append what it did to `<task>-report.md` alongside it. Delegate always appends its own verification section to that same report after the worker's round finishes — pass/fail, command output — so the file reflects the real outcome even if the worker skips its half. Feedback rounds append a new section to the task file and continue the same opencode session; nothing gets overwritten, so the whole exchange stays readable end to end.
+
+Verification runs your configured command if you've set one, otherwise whatever gets auto-detected from `package.json`, a `Makefile`, or a handful of common test runners. A green exit code by itself proves nothing; you're expected to read the actual output and the diff. If something's broken, feedback goes back into the same session with something specific to try, up to a cap you set — past that, it stops and waits for you.
 
 Merging only happens when you run `/delegate:accept`.
 

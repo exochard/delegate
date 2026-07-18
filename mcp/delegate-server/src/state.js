@@ -28,6 +28,9 @@ export async function createSession(repoRoot, fields) {
   const session = {
     id: fields.id ?? newSessionId(),
     task: fields.task,
+    field: fields.field ?? "general",
+    taskFile: fields.taskFile ?? null,
+    reportFile: fields.reportFile ?? null,
     worktreePath: fields.worktreePath,
     branchName: fields.branchName,
     opencodeSessionId: fields.opencodeSessionId ?? null,
