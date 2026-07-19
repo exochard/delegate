@@ -64,11 +64,12 @@ function extractResult(events) {
 }
 
 /**
- * Runs one round of a task via `opencode run` — a one-shot CLI invocation, not a
- * persistent server. Pass `sessionId` to continue a prior round in the same opencode
- * session (feedback rounds); omit it to start a new one.
+ * Builds the argv for `opencode run`, isolated from process spawning so the exact
+ * flag order/shape (esp. the `--` terminator below) can be asserted on without ever
+ * spawning a real process — a prior argv bug here shipped behind a green test suite
+ * because nothing exercised this shape directly.
  */
-export function run({ directory, taskFilePath, sessionId, model, delegateSessionId }) {
+export function buildRunArgs({ directory, taskFilePath, sessionId, model }) {
   const args = ["run", "--dir", directory, "--format", "json"];
   if (sessionId) args.push("-s", sessionId);
   if (model) args.push("-m", model);
@@ -78,6 +79,16 @@ export function run({ directory, taskFilePath, sessionId, model, delegateSession
   // list first: without it opencode parses this message as another filename and
   // dies with `File not found: Follow the instructions...` before the run starts.
   args.push("--", "Follow the instructions in the attached task file.");
+  return args;
+}
+
+/**
+ * Runs one round of a task via `opencode run` — a one-shot CLI invocation, not a
+ * persistent server. Pass `sessionId` to continue a prior round in the same opencode
+ * session (feedback rounds); omit it to start a new one.
+ */
+export function run({ directory, taskFilePath, sessionId, model, delegateSessionId }) {
+  const args = buildRunArgs({ directory, taskFilePath, sessionId, model });
 
   return new Promise((resolve, reject) => {
     const child = execFile("opencode", args, { cwd: directory, timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });

@@ -92,7 +92,7 @@ test("delegate_config_get returns defaults, delegate_config_set persists a patch
         await client.callTool({ name: "delegate_config_get", arguments: { repoRoot } })
       );
       assert.equal(before.maxIterations, 3);
-      assert.equal(before.defaultModel, null);
+      assert.equal(before.defaultModel, "opencode/deepseek-v4-flash-free");
       assert.equal(before.worker, "opencode");
       assert.equal(before.workerPermissions.webfetch, false);
 

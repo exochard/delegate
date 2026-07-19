@@ -9,6 +9,7 @@ import {
   parseModel,
   permissionConfigFromWorkerPermissions,
   writeWorkerConfig,
+  buildRunArgs,
   run,
   exportSession,
   abortRun,
@@ -70,6 +71,47 @@ test("permissionConfigFromWorkerPermissions maps booleans to allow/deny", () => 
 test("permissionConfigFromWorkerPermissions handles an empty/missing config", () => {
   assert.deepEqual(permissionConfigFromWorkerPermissions(), {});
   assert.deepEqual(permissionConfigFromWorkerPermissions({}), {});
+});
+
+test("buildRunArgs with only a directory: no -s/-m/-f flags, message still terminated by --", () => {
+  assert.deepEqual(buildRunArgs({ directory: "/repo" }), [
+    "run",
+    "--dir",
+    "/repo",
+    "--format",
+    "json",
+    "--",
+    "Follow the instructions in the attached task file.",
+  ]);
+});
+
+test("buildRunArgs with sessionId, model, and taskFilePath: flags precede the -- terminator", () => {
+  assert.deepEqual(
+    buildRunArgs({ directory: "/repo", sessionId: "ses_123", model: "opencode/deepseek-v4-flash-free", taskFilePath: "/repo/task.md" }),
+    [
+      "run",
+      "--dir",
+      "/repo",
+      "--format",
+      "json",
+      "-s",
+      "ses_123",
+      "-m",
+      "opencode/deepseek-v4-flash-free",
+      "-f",
+      "/repo/task.md",
+      "--",
+      "Follow the instructions in the attached task file.",
+    ]
+  );
+});
+
+test("buildRunArgs always terminates with -- before the positional message, so opencode never mistakes it for a filename", () => {
+  const args = buildRunArgs({ directory: "/repo", taskFilePath: "/repo/task.md" });
+  const dashDashIndex = args.indexOf("--");
+  assert.notEqual(dashDashIndex, -1);
+  assert.equal(args[dashDashIndex + 1], "Follow the instructions in the attached task file.");
+  assert.equal(args.length, dashDashIndex + 2, "-- and the message must be the final two args");
 });
 
 test("writeWorkerConfig writes an opencode project config with the mapped permission set", async () => {

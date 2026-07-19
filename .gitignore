@@ -6,6 +6,8 @@ node_modules/
 
 # artifacts / agents
 .claude/
+.codex/
+.agents/
 
 .claude-flow/
 commands/.claude-flow/
@@ -16,3 +18,4 @@ mcp/delegate-server/.claude-flow/
 .swarm/
 
 CLAUDE.md
+AGENTS.md

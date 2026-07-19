@@ -5,7 +5,10 @@ import { DEFAULT_WORKER } from "./worker.js";
 
 export const DEFAULT_CONFIG = {
   worker: DEFAULT_WORKER,
-  defaultModel: null,
+  // A null default lets opencode pick its own model, which can hang for minutes on a
+  // fresh install with no configured provider. Pin a free, verified-responsive model so
+  // delegate_start works out of the box; override via delegate_config_set.
+  defaultModel: "opencode/deepseek-v4-flash-free",
   maxIterations: 3,
   verifyCommand: null,
   workerPermissions: {
