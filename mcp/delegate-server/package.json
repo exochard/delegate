@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/*.test.js"
+    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/*.test.js && node ../../scripts/check-version-freshness.js",
+    "check-version": "node ../../scripts/check-version-freshness.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
