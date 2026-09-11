@@ -70,7 +70,13 @@ function extractResult(events) {
  * because nothing exercised this shape directly.
  */
 export function buildRunArgs({ directory, taskFilePath, sessionId, model }) {
-  const args = ["run", "--dir", directory, "--format", "json"];
+  // `--pure` skips external plugins. Without it the worker inherits every plugin-injected
+  // MCP server from the user's global opencode setup — measured at ~54k extra input tokens
+  // per round, and outright context overflow on 32k-context models. An explicit empty
+  // "mcp": {} in the project config does NOT prevent this: opencode merges config sources
+  // deep per key, so only per-server "enabled": false works, which requires knowing the
+  // server names. --pure is the only switch that actually isolates the worker.
+  const args = ["run", "--pure", "--dir", directory, "--format", "json"];
   if (sessionId) args.push("-s", sessionId);
   if (model) args.push("-m", model);
   if (taskFilePath) args.push("-f", taskFilePath);
@@ -82,33 +88,48 @@ export function buildRunArgs({ directory, taskFilePath, sessionId, model }) {
   return args;
 }
 
+/** Builds the rejection message for a non-zero `opencode run` close, distinguishing our own timeout and abort from external kills. Exported for testing. */
+export function runFailureMessage({ exitCode, signal, timedOut, aborted, stderr }) {
+  if (timedOut) return "opencode run timed out and was killed";
+  if (aborted) return "opencode run was stopped";
+  if (signal) return `opencode run was terminated by signal ${signal}`;
+  return `opencode run failed (exit ${exitCode}): ${stderr.trim() || "no stderr output"}`;
+}
+
 /**
  * Runs one round of a task via `opencode run` — a one-shot CLI invocation, not a
  * persistent server. Pass `sessionId` to continue a prior round in the same opencode
  * session (feedback rounds); omit it to start a new one.
  */
-export function run({ directory, taskFilePath, sessionId, model, delegateSessionId }) {
+export function run({ directory, taskFilePath, sessionId, model, delegateSessionId, timeoutMs = RUN_TIMEOUT_MS }) {
   const args = buildRunArgs({ directory, taskFilePath, sessionId, model });
 
   return new Promise((resolve, reject) => {
-    const child = execFile("opencode", args, { cwd: directory, timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
-    if (delegateSessionId) inFlight.set(delegateSessionId, child);
+    const child = execFile("opencode", args, { cwd: directory, maxBuffer: MAX_BUFFER });
+    const entry = { child, aborted: false, timedOut: false };
+    if (delegateSessionId) inFlight.set(delegateSessionId, entry);
+
+    // Own timer instead of execFile's timeout option: when the kill lands, close only
+    // tells us "SIGTERM" — we need to know it was our timer, not abortRun or the user.
+    const timer = setTimeout(() => {
+      entry.timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    timer.unref?.();
 
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (d) => (stdout += d));
     child.stderr?.on("data", (d) => (stderr += d));
     child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
       if (delegateSessionId) inFlight.delete(delegateSessionId);
 
       const { sessionId: resultSessionId, message } = extractResult(parseEvents(stdout));
       if (exitCode !== 0) {
-        const aborted = signal === "SIGTERM" && exitCode === null;
         reject(
           new Error(
-            aborted
-              ? "opencode run was stopped"
-              : `opencode run failed (exit ${exitCode}): ${stderr.trim() || "no stderr output"}`
+            runFailureMessage({ exitCode, signal, timedOut: entry.timedOut, aborted: entry.aborted, stderr })
           )
         );
         return;
@@ -120,6 +141,7 @@ export function run({ directory, taskFilePath, sessionId, model, delegateSession
       resolve({ sessionId: resultSessionId, message });
     });
     child.on("error", (err) => {
+      clearTimeout(timer);
       if (delegateSessionId) inFlight.delete(delegateSessionId);
       reject(new Error(`Failed to spawn opencode run: ${err.message}`));
     });
@@ -128,10 +150,30 @@ export function run({ directory, taskFilePath, sessionId, model, delegateSession
 
 /** Aborts the in-flight `opencode run` for a delegate session, if one is currently running. Returns false if none was running. */
 export function abortRun(delegateSessionId) {
-  const child = inFlight.get(delegateSessionId);
-  if (!child) return false;
-  child.kill("SIGTERM");
+  const entry = inFlight.get(delegateSessionId);
+  if (!entry) return false;
+  entry.aborted = true;
+  entry.child.kill("SIGTERM");
   return true;
+}
+
+/**
+ * Finds the JSON document in `opencode export` output. The export body is pretty-printed,
+ * so line-based scanning must start at a line beginning the document and parse through the
+ * end of output — slicing at the first '{' anywhere breaks the moment opencode logs a brace
+ * before the body.
+ */
+export function extractExportJson(stdout) {
+  const lines = stdout.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trimStart().startsWith("{")) continue;
+    try {
+      return JSON.parse(lines.slice(i).join("\n"));
+    } catch {
+      // A log line may start with '{' without being the document — try the next candidate.
+    }
+  }
+  throw new Error("opencode export completed without a JSON body in its output");
 }
 
 /** Reads a session's cost/token summary via `opencode export`. */
@@ -142,8 +184,8 @@ export async function exportSession({ directory, sessionId }) {
       else resolve({ stdout });
     });
   });
-  // `opencode export` prints a "Exporting session: <id>" line before the JSON body.
-  const parsed = JSON.parse(stdout.slice(stdout.indexOf("{")));
+  // `opencode export` may print a "Exporting session: <id>" line before the JSON body.
+  const parsed = extractExportJson(stdout);
   return { cost: parsed.info?.cost ?? 0, tokens: parsed.info?.tokens ?? null };
 }
 

@@ -14,11 +14,14 @@ import {
   exportSession,
   abortRun,
   checkInstalled,
+  runFailureMessage,
+  extractExportJson,
   WORKER_CONFIG_FILENAME,
 } from "../src/opencode.js";
+import { DEFAULT_MODEL } from "../src/config.js";
 
 const execFileAsync = promisify(execFile);
-const FREE_MODEL = "opencode/deepseek-v4-flash-free";
+const FREE_MODEL = DEFAULT_MODEL;
 
 // Anything that actually spawns `opencode run` hits a live model, so it only runs on demand.
 const e2eOnly = process.env.DELEGATE_E2E === "1" ? false : "set DELEGATE_E2E=1 to run (needs opencode and network)";
@@ -73,9 +76,10 @@ test("permissionConfigFromWorkerPermissions handles an empty/missing config", ()
   assert.deepEqual(permissionConfigFromWorkerPermissions({}), {});
 });
 
-test("buildRunArgs with only a directory: no -s/-m/-f flags, message still terminated by --", () => {
+test("buildRunArgs with only a directory: --pure isolation, no -s/-m/-f flags, message still terminated by --", () => {
   assert.deepEqual(buildRunArgs({ directory: "/repo" }), [
     "run",
+    "--pure",
     "--dir",
     "/repo",
     "--format",
@@ -87,9 +91,10 @@ test("buildRunArgs with only a directory: no -s/-m/-f flags, message still termi
 
 test("buildRunArgs with sessionId, model, and taskFilePath: flags precede the -- terminator", () => {
   assert.deepEqual(
-    buildRunArgs({ directory: "/repo", sessionId: "ses_123", model: "opencode/deepseek-v4-flash-free", taskFilePath: "/repo/task.md" }),
+    buildRunArgs({ directory: "/repo", sessionId: "ses_123", model: FREE_MODEL, taskFilePath: "/repo/task.md" }),
     [
       "run",
+      "--pure",
       "--dir",
       "/repo",
       "--format",
@@ -97,7 +102,7 @@ test("buildRunArgs with sessionId, model, and taskFilePath: flags precede the --
       "-s",
       "ses_123",
       "-m",
-      "opencode/deepseek-v4-flash-free",
+      FREE_MODEL,
       "-f",
       "/repo/task.md",
       "--",
@@ -121,7 +126,50 @@ test("writeWorkerConfig writes an opencode project config with the mapped permis
     const parsed = JSON.parse(raw);
     assert.equal(parsed.$schema, "https://opencode.ai/config.json");
     assert.deepEqual(parsed.permission, { bash: "allow", webfetch: "deny" });
+    // No mcp key on purpose: an explicit "mcp": {} does NOT stop opencode deep-merging the
+    // user's global/plugin MCP servers into the worker (verified against opencode 1.18.29 —
+    // resolved config still listed every inherited server). Isolation comes from the
+    // --pure flag in buildRunArgs, not from this file.
+    assert.ok(!("mcp" in parsed));
   });
+});
+
+test("runFailureMessage distinguishes our timeout from an explicit abort and external kills", () => {
+  const base = { exitCode: null, signal: "SIGTERM", stderr: "" };
+  assert.equal(
+    runFailureMessage({ ...base, timedOut: true, aborted: false }),
+    "opencode run timed out and was killed"
+  );
+  assert.equal(
+    runFailureMessage({ ...base, timedOut: false, aborted: true }),
+    "opencode run was stopped"
+  );
+  assert.equal(
+    runFailureMessage({ exitCode: null, signal: "SIGKILL", timedOut: false, aborted: false, stderr: "" }),
+    "opencode run was terminated by signal SIGKILL"
+  );
+  assert.equal(
+    runFailureMessage({ exitCode: 2, signal: null, timedOut: false, aborted: false, stderr: "boom" }),
+    "opencode run failed (exit 2): boom"
+  );
+  assert.equal(
+    runFailureMessage({ exitCode: 1, signal: null, timedOut: false, aborted: false, stderr: "  " }),
+    "opencode run failed (exit 1): no stderr output"
+  );
+});
+
+test("extractExportJson finds the JSON body past preamble and stray brace log lines", () => {
+  const body = JSON.stringify({ info: { cost: 0.01, tokens: { input: 10 } } }, null, 2);
+  // Preamble on stdout (TTY behavior), as today.
+  assert.deepEqual(extractExportJson(`Exporting session: ses_abc\n${body}`).info.cost, 0.01);
+  // No preamble at all.
+  assert.deepEqual(extractExportJson(body).info.tokens.input, 10);
+  // A log line containing a brace before the body must not hijack the parse.
+  assert.deepEqual(
+    extractExportJson(`warning: failed {something}\n${body}`).info.cost,
+    0.01
+  );
+  assert.throws(() => extractExportJson("no json here"), /without a JSON body/);
 });
 
 test("checkInstalled reports the installed opencode version", async () => {
@@ -160,6 +208,17 @@ test("exportSession returns cost/tokens for a real session", { skip: e2eOnly, ti
     const { cost, tokens } = await exportSession({ directory: dir, sessionId });
     assert.equal(typeof cost, "number");
     assert.equal(typeof tokens.input, "number");
+  });
+});
+
+test("run killed by our own timer reports a timeout, not a generic stop", { timeout: 30_000 }, async () => {
+  await withTempGitRepo(async (dir) => {
+    // A 50ms timer fires long before opencode finishes (or even starts) a run, so the
+    // SIGTERM is ours — this must be reported as a timeout without needing any model.
+    await assert.rejects(
+      run({ directory: dir, timeoutMs: 50 }),
+      /opencode run timed out and was killed/
+    );
   });
 });
 
