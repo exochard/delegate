@@ -3,12 +3,17 @@ import path from "node:path";
 
 import { DEFAULT_WORKER } from "./worker.js";
 
+export const DEFAULT_MODEL = "opencode/mimo-v2.5-free";
+
 export const DEFAULT_CONFIG = {
   worker: DEFAULT_WORKER,
   // A null default lets opencode pick its own model, which can hang for minutes on a
   // fresh install with no configured provider. Pin a free, verified-responsive model so
-  // delegate_start works out of the box; override via delegate_config_set.
-  defaultModel: "opencode/deepseek-v4-flash-free",
+  // delegate_start works out of the box; override via delegate_config_set. Verify before
+  // re-pinning: the opencode catalog retires free models without notice — the previous
+  // pin (deepseek-v4-flash-free) started failing with "Unexpected server error" once
+  // delisted, and `opencode models` is the ground truth.
+  defaultModel: DEFAULT_MODEL,
   maxIterations: 3,
   verifyCommand: null,
   workerPermissions: {

@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { WORKER_CONFIG_FILENAME as FAKE_CONFIG_FILENAME, OUTPUT_FILENAME } from "./helpers/fake-worker.js";
+import { DEFAULT_MODEL } from "../src/config.js";
 
 const execFileAsync = promisify(execFile);
 const serverEntry = fileURLToPath(new URL("../src/index.js", import.meta.url));
@@ -18,7 +19,7 @@ const fakeWorkerPath = fileURLToPath(new URL("./helpers/fake-worker.js", import.
 // Everything but the E2E test below runs against the fake driver: no network, no worker
 // child process. Set DELEGATE_E2E=1 to also run the one test that drives real opencode.
 const E2E = process.env.DELEGATE_E2E === "1";
-const FREE_MODEL = "opencode/deepseek-v4-flash-free";
+const FREE_MODEL = DEFAULT_MODEL;
 
 /** Starts the MCP server as a subprocess. Injects the fake worker driver unless `real` is set. */
 async function withServer(fn, { real = false } = {}) {
@@ -92,7 +93,7 @@ test("delegate_config_get returns defaults, delegate_config_set persists a patch
         await client.callTool({ name: "delegate_config_get", arguments: { repoRoot } })
       );
       assert.equal(before.maxIterations, 3);
-      assert.equal(before.defaultModel, "opencode/deepseek-v4-flash-free");
+      assert.equal(before.defaultModel, DEFAULT_MODEL);
       assert.equal(before.worker, "opencode");
       assert.equal(before.workerPermissions.webfetch, false);
 
