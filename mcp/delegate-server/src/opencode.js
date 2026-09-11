@@ -1,15 +1,61 @@
-import { execFile } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { openSync, closeSync, readFileSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_BUFFER = 1024 * 1024 * 64;
 
 // Bookkeeping file opencode reads for worker permissions — never part of the task's
 // own diff. worktree.js excludes this name from diff/stat/commit pathspecs.
 export const WORKER_CONFIG_FILENAME = "opencode.jsonc";
 
-const inFlight = new Map(); // delegateSessionId -> ChildProcess
+const inFlight = new Map(); // delegateSessionId -> { child, aborted, timedOut }
+
+let spawnCounter = 0;
+
+// opencode (a Bun binary) can hang at startup when stdout/stderr are pipes: observed on
+// opencode 1.18.29/Linux with `opencode run` — every pipe spawn sat silent past the
+// 10-minute round timeout while the identical argv with file stdio finished in seconds
+// (`opencode --version` is unaffected, so checkInstalled keeps pipes). The full-runtime
+// commands therefore get temp-file stdio, read back at close. Events only matter at
+// close anyway, so nothing is lost versus consuming the pipe incrementally.
+function spawnOpencode(args, { cwd }) {
+  const id = `${process.pid}-${++spawnCounter}`;
+  const outPath = path.join(os.tmpdir(), `delegate-opencode-${id}.stdout`);
+  const errPath = path.join(os.tmpdir(), `delegate-opencode-${id}.stderr`);
+  const outFd = openSync(outPath, "w");
+  const errFd = openSync(errPath, "w");
+  const child = spawn("opencode", args, { cwd, stdio: ["ignore", outFd, errFd] });
+  child.on("close", () => {
+    closeSync(outFd);
+    closeSync(errFd);
+  });
+  child.on("error", () => {
+    closeSync(outFd);
+    closeSync(errFd);
+  });
+  return {
+    child,
+    readOutput() {
+      let stdout = "";
+      let stderr = "";
+      try {
+        stdout = readFileSync(outPath, "utf8");
+      } catch {}
+      try {
+        stderr = readFileSync(errPath, "utf8");
+      } finally {
+        for (const p of [outPath, errPath]) {
+          try {
+            unlinkSync(p);
+          } catch {}
+        }
+      }
+      return { stdout, stderr };
+    },
+  };
+}
 
 /** "provider/model-id" -> {providerID, id}. Returns null for falsy input. Throws on malformed input. */
 export function parseModel(modelString) {
@@ -114,7 +160,8 @@ export function run({ directory, taskFilePath, sessionId, model, delegateSession
   const args = buildRunArgs({ directory, taskFilePath, sessionId, model });
 
   return new Promise((resolve, reject) => {
-    const child = execFile("opencode", args, { cwd: directory, maxBuffer: MAX_BUFFER });
+    const spawned = spawnOpencode(args, { cwd: directory });
+    const child = spawned.child;
     const entry = { child, aborted: false, timedOut: false };
     if (delegateSessionId) inFlight.set(delegateSessionId, entry);
 
@@ -126,14 +173,11 @@ export function run({ directory, taskFilePath, sessionId, model, delegateSession
     }, timeoutMs);
     timer.unref?.();
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (d) => (stdout += d));
-    child.stderr?.on("data", (d) => (stderr += d));
     child.on("close", (exitCode, signal) => {
       clearTimeout(timer);
       if (delegateSessionId) inFlight.delete(delegateSessionId);
 
+      const { stdout, stderr } = spawned.readOutput();
       const { sessionId: resultSessionId, message } = extractResult(parseEvents(stdout));
       if (exitCode !== 0) {
         reject(
@@ -187,13 +231,20 @@ export function extractExportJson(stdout) {
 
 /** Reads a session's cost/token summary via `opencode export`. */
 export async function exportSession({ directory, sessionId }) {
-  const { stdout } = await new Promise((resolve, reject) => {
-    execFile("opencode", ["export", sessionId], { cwd: directory, maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`opencode export failed: ${stderr || err.message}`));
-      else resolve({ stdout });
+  const spawned = spawnOpencode(["export", sessionId], { cwd: directory });
+  await new Promise((resolve, reject) => {
+    spawned.child.on("close", (exitCode) => {
+      if (exitCode !== 0) {
+        const { stderr } = spawned.readOutput();
+        reject(new Error(`opencode export failed: ${stderr.trim() || `exit ${exitCode}`}`));
+        return;
+      }
+      resolve();
     });
+    spawned.child.on("error", (err) => reject(new Error(`opencode export failed: ${err.message}`)));
   });
   // `opencode export` may print a "Exporting session: <id>" line before the JSON body.
+  const { stdout } = spawned.readOutput();
   const parsed = extractExportJson(stdout);
   return { cost: parsed.info?.cost ?? 0, tokens: parsed.info?.tokens ?? null };
 }
