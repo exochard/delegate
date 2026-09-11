@@ -91,6 +91,28 @@ test("runVerification reports allPassed=false when one detected command fails", 
   });
 });
 
+test("runVerification reports a missing auto-detected binary as a failed command, not a crash", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { test: "exit 0" } })
+    );
+    // Empty PATH makes the detected `npm` binary unresolvable, deterministically
+    // simulating "auto-detected a runner that isn't installed" on any machine.
+    const originalPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      const result = await runVerification(dir, {});
+      assert.equal(result.source, "auto-detected");
+      assert.equal(result.allPassed, false);
+      assert.equal(result.results[0].exitCode, null);
+      assert.match(result.results[0].spawnError, /ENOENT/);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});
+
 test("runVerification with nothing detected returns a note instead of failing", async () => {
   await withTempDir(async (dir) => {
     const result = await runVerification(dir, {});

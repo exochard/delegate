@@ -88,6 +88,19 @@ function runCommand(cwd, argv, { shell = false, timeoutMs = DEFAULT_TIMEOUT_MS }
     let stderr = "";
     child.stdout?.on("data", (d) => (stdout += d));
     child.stderr?.on("data", (d) => (stderr += d));
+    // Never reject here: runVerification assembles per-command results, and one command
+    // failing to spawn (e.g. cargo detected from Cargo.toml but not installed) must come
+    // back as a failed result, not an unhandled error that takes down the MCP server.
+    child.on("error", (err) => {
+      resolve({
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        spawnError: err.message,
+        stdout,
+        stderr,
+      });
+    });
     child.on("close", (exitCode, signal) => {
       resolve({
         exitCode: exitCode ?? null,
