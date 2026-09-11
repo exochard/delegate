@@ -121,11 +121,18 @@ test("buildRunArgs always terminates with -- before the positional message, so o
 
 test("writeWorkerConfig writes an opencode project config with the mapped permission set", async () => {
   await withTempGitRepo(async (dir) => {
-    await writeWorkerConfig({ directory: dir, workerPermissions: { bash: true, webfetch: false } });
+    await writeWorkerConfig({ directory: dir, workerPermissions: { bash: true, webfetch: false }, repoRoot: "/mainrepo" });
     const raw = await readFile(path.join(dir, WORKER_CONFIG_FILENAME), "utf8");
     const parsed = JSON.parse(raw);
     assert.equal(parsed.$schema, "https://opencode.ai/config.json");
-    assert.deepEqual(parsed.permission, { bash: "allow", webfetch: "deny" });
+    assert.deepEqual(parsed.permission, {
+      bash: "allow",
+      webfetch: "deny",
+      // The task/report handoff files live in the main repo, outside the worktree; without
+      // this scoped rule opencode auto-rejects every access to them (observed e2e: exit 0,
+      // empty diff, round silently did nothing).
+      external_directory: { "/mainrepo/**": "allow" },
+    });
     // No mcp key on purpose: an explicit "mcp": {} does NOT stop opencode deep-merging the
     // user's global/plugin MCP servers into the worker (verified against opencode 1.18.29 —
     // resolved config still listed every inherited server). Isolation comes from the

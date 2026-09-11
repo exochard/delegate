@@ -112,7 +112,7 @@ server.registerTool(
 
     try {
       worker.parseModel(effectiveModel); // throws on a malformed model string
-      await worker.writeWorkerConfig({ directory: worktreePath, workerPermissions: config.workerPermissions });
+      await worker.writeWorkerConfig({ directory: worktreePath, workerPermissions: config.workerPermissions, repoRoot });
 
       const baseline = await reportMod.snapshotReport({ repoRoot, field, slug });
       const run = await worker.run({

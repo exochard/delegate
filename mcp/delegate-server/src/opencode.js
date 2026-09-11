@@ -29,10 +29,19 @@ export function permissionConfigFromWorkerPermissions(workerPermissions = {}) {
 }
 
 /** Writes the worker's permission scope as an opencode project config in its worktree. */
-export async function writeWorkerConfig({ directory, workerPermissions }) {
+export async function writeWorkerConfig({ directory, workerPermissions, repoRoot }) {
   const config = {
     $schema: "https://opencode.ai/config.json",
-    permission: permissionConfigFromWorkerPermissions(workerPermissions),
+    permission: {
+      ...permissionConfigFromWorkerPermissions(workerPermissions),
+      // The task and report files live in the MAIN repo, outside the worktree — opencode
+      // treats every path outside the worktree as external and auto-rejects access
+      // without this rule, silently crippling the round (observed: exit 0, empty diff).
+      // Scoped to the repo root deliberately: bash is already "allow", so this grants no
+      // capability the worker doesn't have via the shell; it only makes the file tools
+      // consistent with it.
+      external_directory: { [`${repoRoot}/**`]: "allow" },
+    },
   };
   await writeFile(path.join(directory, WORKER_CONFIG_FILENAME), JSON.stringify(config, null, 2));
 }
