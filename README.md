@@ -59,6 +59,18 @@ Merging only happens when you run `/delegate:accept`.
 
 `webfetch`, `websearch`, and `task` start off — the worker runs unattended, so it shouldn't be able to reach the internet or spawn sub-agents until you decide it should. Turn them on per project with `/delegate:config` if you actually need them.
 
+The worker also runs with opencode's `--pure` flag: it inherits none of your global opencode plugins or plugin-injected MCP servers. Measured on one real setup, that inheritance cost ~54k extra input tokens per round and pushed 32k-context models into overflow; the worker round itself needs ~15k.
+
+## Benchmarking
+
+```bash
+cd mcp/delegate-server
+npm run benchmark            # deterministic lane: real MCP server, fake worker driver
+DELEGATE_E2E=1 npm run benchmark   # + real lane: one opencode round on the default model
+```
+
+The deterministic lane drives the actual MCP server process over stdio (exactly like Claude Code does) with the fake worker driver, timing `delegate_start` and asserting the worker config never leaks into the diff. The real lane reports opencode's own exported token/cost numbers for a round. The "direct" comparison column is a chars/4 estimate of the task plus the landed diff — a floor, not a measurement; the benchmark never calls a billed token API.
+
 ## License
 
 MIT
