@@ -27,6 +27,10 @@ const MANIFEST = path.join(ROOT, '.claude-plugin', 'plugin.json');
 const NOT_SHIPPED = [
   /^tests\//, /^benchmark\//, /^docs\//, /^scripts\//, /^\.handoff\//,
   /^CHANGELOG\.md$/, /^\.gitignore$/, /^node_modules\//, /^HANDOFF\.md$/,
+  // The MCP server is executed in place, not packaged — its manifests describe the
+  // server's own dev identity (deps, scripts), not plugin behavior. Editing them
+  // must not force a plugin version bump.
+  /^mcp\/delegate-server\/package\.json$/, /^mcp\/delegate-server\/package-lock\.json$/,
 ];
 
 function git(args) {
