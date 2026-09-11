@@ -125,7 +125,7 @@ server.registerTool(
 
       const verification = await verifyMod.runVerification(worktreePath, { verifyCommand: config.verifyCommand });
       const reportResult = await reportMod.finalizeReportRound({ repoRoot, field, slug, round: 1, baseline, verification });
-      const diff = await worktreeMod.getWorktreeDiff(worktreePath);
+      const diff = await worktreeMod.getWorktreeDiff(worktreePath, worker);
 
       session = await state.updateSession(repoRoot, sessionId, {
         iteration: 1,
@@ -207,7 +207,7 @@ server.registerTool(
       baseline,
       verification,
     });
-    const diff = await worktreeMod.getWorktreeDiff(session.worktreePath);
+    const diff = await worktreeMod.getWorktreeDiff(session.worktreePath, worker);
 
     session = await state.updateSession(repoRoot, id, {
       opencodeSessionId: run.sessionId,
@@ -251,9 +251,10 @@ server.registerTool(
     const repoRoot = resolveRepoRoot(repoRootInput);
     let session = await requireSession(repoRoot, id);
     const config = await loadConfig(repoRoot);
+    const worker = resolveWorker(config.worker);
 
     const verification = await verifyMod.runVerification(session.worktreePath, { verifyCommand: config.verifyCommand });
-    const diff = await worktreeMod.getWorktreeDiff(session.worktreePath);
+    const diff = await worktreeMod.getWorktreeDiff(session.worktreePath, worker);
 
     const newStatus =
       verification.allPassed === false
@@ -311,7 +312,8 @@ server.registerTool(
   async ({ repoRoot: repoRootInput, id }) => {
     const repoRoot = resolveRepoRoot(repoRootInput);
     const session = await requireSession(repoRoot, id);
-    const diff = await worktreeMod.getWorktreeDiff(session.worktreePath);
+    const config = await loadConfig(repoRoot);
+    const diff = await worktreeMod.getWorktreeDiff(session.worktreePath, resolveWorker(config.worker));
     return { content: [{ type: "text", text: JSON.stringify(diff, null, 2) }] };
   }
 );
@@ -329,7 +331,8 @@ server.registerTool(
   async ({ repoRoot: repoRootInput, id }) => {
     const repoRoot = resolveRepoRoot(repoRootInput);
     const session = await requireSession(repoRoot, id);
-    await worktreeMod.mergeWorktree(repoRoot, session);
+    const config = await loadConfig(repoRoot);
+    await worktreeMod.mergeWorktree(repoRoot, session, resolveWorker(config.worker));
     await state.deleteSession(repoRoot, id);
     return {
       content: [{ type: "text", text: JSON.stringify({ accepted: id, branch: session.branchName }, null, 2) }],

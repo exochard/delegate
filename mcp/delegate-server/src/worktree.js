@@ -8,9 +8,25 @@ import { resolveWorker } from "./worker.js";
 const execFileAsync = promisify(execFile);
 
 const MAX_DIFF_CHARS = 50_000;
-// Excludes delegate's own bookkeeping file from every diff/stat/commit pathspec below —
-// it configures the worker's permissions, it's not part of the task's own change.
-const EXCLUDE_WORKER_CONFIG = `:!${resolveWorker().WORKER_CONFIG_FILENAME}`;
+const MAX_COMMIT_SUBJECT_CHARS = 72;
+
+// Task text is arbitrary user input: raw newlines would break `git commit -m`'s single
+// argument and a wall of text makes `git log` useless.
+export function mergeCommitMessage(task) {
+  const prefix = "delegate: ";
+  const budget = MAX_COMMIT_SUBJECT_CHARS - prefix.length;
+  const firstLine = String(task).split("\n", 1)[0].trim();
+  const subject = firstLine.length > budget ? `${firstLine.slice(0, budget - 1)}…` : firstLine;
+  return prefix + subject;
+}
+
+// Excludes the active worker's own bookkeeping file from every diff/stat/commit pathspec —
+// it configures the worker's permissions, it's not part of the task's own change. Resolved
+// per call from the worker actually in use: baking it in at module load from the DEFAULT
+// worker breaks the exclusion the moment a different driver is configured.
+function excludeWorkerConfig(worker) {
+  return `:!${worker.WORKER_CONFIG_FILENAME}`;
+}
 
 async function git(cwd, args) {
   try {
@@ -53,24 +69,24 @@ export async function createWorktree(repoRoot, sessionId) {
   return { worktreePath: wtPath, branchName: branch };
 }
 
-async function hasUncommittedChanges(worktreePath) {
-  const status = await git(worktreePath, ["status", "--porcelain", "--", ".", EXCLUDE_WORKER_CONFIG]);
+async function hasUncommittedChanges(worktreePath, worker) {
+  const status = await git(worktreePath, ["status", "--porcelain", "--", ".", excludeWorkerConfig(worker)]);
   return status.trim().length > 0;
 }
 
-async function commitPendingChanges(worktreePath, message) {
-  if (!(await hasUncommittedChanges(worktreePath))) return false;
-  await git(worktreePath, ["add", "-A", "--", ".", EXCLUDE_WORKER_CONFIG]);
+async function commitPendingChanges(worktreePath, message, worker) {
+  if (!(await hasUncommittedChanges(worktreePath, worker))) return false;
+  await git(worktreePath, ["add", "-A", "--", ".", excludeWorkerConfig(worker)]);
   await git(worktreePath, ["commit", "-m", message]);
   return true;
 }
 
-export async function getWorktreeDiff(worktreePath) {
+export async function getWorktreeDiff(worktreePath, worker = resolveWorker()) {
   // --intent-to-add marks untracked files so they show up in `git diff HEAD`
   // as new-file diffs, without actually staging their content.
-  await git(worktreePath, ["add", "-A", "-N", "--", ".", EXCLUDE_WORKER_CONFIG]);
-  const stat = await git(worktreePath, ["diff", "HEAD", "--stat", "--", ".", EXCLUDE_WORKER_CONFIG]);
-  let patch = await git(worktreePath, ["diff", "HEAD", "--", ".", EXCLUDE_WORKER_CONFIG]);
+  await git(worktreePath, ["add", "-A", "-N", "--", ".", excludeWorkerConfig(worker)]);
+  const stat = await git(worktreePath, ["diff", "HEAD", "--stat", "--", ".", excludeWorkerConfig(worker)]);
+  let patch = await git(worktreePath, ["diff", "HEAD", "--", ".", excludeWorkerConfig(worker)]);
   let truncated = false;
   if (patch.length > MAX_DIFF_CHARS) {
     patch = `${patch.slice(0, MAX_DIFF_CHARS)}\n...[diff truncated, ${patch.length} chars total]`;
@@ -79,9 +95,10 @@ export async function getWorktreeDiff(worktreePath) {
   return { stat: stat.trim(), patch, truncated };
 }
 
-export async function mergeWorktree(repoRoot, session) {
-  await commitPendingChanges(session.worktreePath, `delegate: ${session.task}`);
-  await git(repoRoot, ["merge", "--no-ff", session.branchName, "-m", `delegate: ${session.task}`]);
+export async function mergeWorktree(repoRoot, session, worker = resolveWorker()) {
+  const message = mergeCommitMessage(session.task);
+  await commitPendingChanges(session.worktreePath, message, worker);
+  await git(repoRoot, ["merge", "--no-ff", session.branchName, "-m", message]);
   await git(repoRoot, ["worktree", "remove", session.worktreePath, "--force"]);
   await git(repoRoot, ["branch", "-d", session.branchName]);
 }

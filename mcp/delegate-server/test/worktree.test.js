@@ -14,6 +14,7 @@ import {
   branchName,
   worktreePath,
   assertGitRepo,
+  mergeCommitMessage,
 } from "../src/worktree.js";
 
 const execFileAsync = promisify(execFile);
@@ -95,6 +96,61 @@ test("mergeWorktree commits pending changes, merges into main, and cleans up", a
 
     const worktrees = await listWorktrees(repoRoot);
     assert.ok(!worktrees.some((w) => w.path === wtPath));
+  });
+});
+
+test("mergeCommitMessage keeps only the task's first line within 72 chars", () => {
+  const multiline = mergeCommitMessage("add feature.txt\nwith a second line\nand a third");
+  assert.equal(multiline, "delegate: add feature.txt");
+  assert.ok(!multiline.includes("\n"));
+
+  const longTask = mergeCommitMessage("x".repeat(300));
+  assert.ok(longTask.length <= 72, `subject was ${longTask.length} chars`);
+  assert.ok(longTask.endsWith("…"));
+  assert.equal(mergeCommitMessage("short task"), "delegate: short task");
+});
+
+test("getWorktreeDiff excludes the ACTIVE worker's config file, not the default worker's", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    const sessionId = "dlg_test0005eeee";
+    const { worktreePath: wtPath } = await createWorktree(repoRoot, sessionId);
+
+    await writeFile(path.join(wtPath, "output.txt"), "real work\n");
+    await writeFile(path.join(wtPath, "custom-driver.jsonc"), '{"permission":{}}\n');
+
+    const fakeWorker = { WORKER_CONFIG_FILENAME: "custom-driver.jsonc" };
+    const diff = await getWorktreeDiff(wtPath, fakeWorker);
+    assert.match(diff.patch, /output\.txt/);
+    assert.doesNotMatch(diff.patch, /custom-driver\.jsonc/);
+    assert.doesNotMatch(diff.stat, /custom-driver\.jsonc/);
+  });
+});
+
+test("mergeWorktree sanitizes the commit subject and excludes the active worker's config file", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    const sessionId = "dlg_test0006ffff";
+    const { worktreePath: wtPath, branchName: branch } = await createWorktree(repoRoot, sessionId);
+    await writeFile(path.join(wtPath, "feature.txt"), "worker output\n");
+    await writeFile(path.join(wtPath, "custom-driver.jsonc"), '{"permission":{}}\n');
+
+    const fakeWorker = { WORKER_CONFIG_FILENAME: "custom-driver.jsonc" };
+    const session = {
+      worktreePath: wtPath,
+      branchName: branch,
+      task: "add feature.txt with a much longer explanation that would overflow a commit subject line badly\nsecond line",
+    };
+    await mergeWorktree(repoRoot, session, fakeWorker);
+
+    const subject = (await git(repoRoot, ["log", "-1", "--format=%s"])).trim();
+    assert.ok(subject.length <= 72, `subject was ${subject.length} chars: ${subject}`);
+    assert.ok(!subject.includes("\n"));
+    assert.match(subject, /^delegate: add feature\.txt/);
+
+    // The worker config file never landed in the merge commit (-m: plain `git show`
+    // prints nothing for merge commits).
+    const files = await git(repoRoot, ["show", "-m", "--first-parent", "--name-only", "--format=", "HEAD"]);
+    assert.match(files, /feature\.txt/);
+    assert.doesNotMatch(files, /custom-driver\.jsonc/);
   });
 });
 
