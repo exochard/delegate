@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 
 const STATUSES = [
   "running",
@@ -10,6 +11,50 @@ const STATUSES = [
   "rejected",
   "failed",
 ];
+
+// Sessions gain fields over time (e.g. delegate_stop's abortedAt), so unknown keys are
+// kept, not rejected — the schema guards against corruption, not against evolution.
+// tokens is written straight from the worker driver's exportSession, whose shape varies
+// by driver, so it's validated loosely.
+const SessionSchema = z
+  .object({
+    id: z.string().min(1),
+    task: z.string(),
+    field: z.string(),
+    taskFile: z.string().nullable(),
+    reportFile: z.string().nullable(),
+    worktreePath: z.string(),
+    branchName: z.string(),
+    opencodeSessionId: z.string().nullable(),
+    model: z.string().nullable(),
+    status: z.enum(STATUSES),
+    iteration: z.number().int().nonnegative(),
+    maxIterations: z.number().int().positive(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    cost: z.number(),
+    tokens: z.object({}).passthrough(),
+    lastVerification: z.unknown().nullable(),
+  })
+  .passthrough();
+
+/** Parses and validates one session state file. Corrupt state must fail named and loudly here, not surfaces as a JSON.parse surprise deep in a tool handler. */
+function parseSessionJson(raw, filePath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Corrupt delegate session state at ${filePath} (invalid JSON: ${err.message}). Delete the file or restore it from git.`);
+  }
+  const result = SessionSchema.safeParse(parsed);
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Corrupt delegate session state at ${filePath} (${issues}). Delete the file or restore it from git.`);
+  }
+  return result.data;
+}
 
 export function stateDir(repoRoot) {
   return path.join(repoRoot, ".claude", "delegate", "state");
@@ -55,9 +100,10 @@ export async function writeSession(repoRoot, session) {
 }
 
 export async function readSession(repoRoot, id) {
+  const filePath = sessionPath(repoRoot, id);
   try {
-    const raw = await readFile(sessionPath(repoRoot, id), "utf8");
-    return JSON.parse(raw);
+    const raw = await readFile(filePath, "utf8");
+    return parseSessionJson(raw, filePath);
   } catch (err) {
     if (err.code === "ENOENT") return null;
     throw err;
@@ -65,9 +111,10 @@ export async function readSession(repoRoot, id) {
 }
 
 export async function listSessions(repoRoot) {
+  const dir = stateDir(repoRoot);
   let entries;
   try {
-    entries = await readdir(stateDir(repoRoot));
+    entries = await readdir(dir);
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw err;
@@ -75,7 +122,7 @@ export async function listSessions(repoRoot) {
   const sessions = await Promise.all(
     entries
       .filter((f) => f.endsWith(".json"))
-      .map((f) => readFile(path.join(stateDir(repoRoot), f), "utf8").then(JSON.parse))
+      .map(async (f) => parseSessionJson(await readFile(path.join(dir, f), "utf8"), path.join(dir, f)))
   );
   return sessions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }

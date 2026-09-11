@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -104,6 +104,46 @@ test("updateSession throws for an unknown session id", async () => {
       () => updateSession(repoRoot, "dlg_doesnotexist", { status: "accepted" }),
       /No delegate session found/
     );
+  });
+});
+
+test("readSession rejects a hand-corrupted session file with a named, actionable error", async () => {
+  await withTempRepo(async (repoRoot) => {
+    const session = await createSession(repoRoot, {
+      task: "x",
+      worktreePath: "/x",
+      branchName: "b/x",
+      maxIterations: 3,
+    });
+    const filePath = path.join(repoRoot, ".claude", "delegate", "state", `${session.id}.json`);
+
+    // Truncated/garbage bytes — the realistic corruption shape.
+    await rm(filePath);
+    await writeFile(filePath, '{"id":"dlg_abcd","task":');
+    await assert.rejects(() => readSession(repoRoot, session.id), (err) => {
+      assert.match(err.message, /Corrupt delegate session state/);
+      assert.match(err.message, new RegExp(session.id));
+      assert.match(err.message, /invalid JSON/);
+      assert.match(err.message, /Delete the file or restore/);
+      return true;
+    });
+
+    // Parseable JSON that doesn't match the session schema.
+    await writeFile(filePath, JSON.stringify({ id: session.id, task: 42 }));
+    await assert.rejects(() => readSession(repoRoot, session.id), (err) => {
+      assert.match(err.message, /Corrupt delegate session state/);
+      assert.match(err.message, /task: Expected string/);
+      return true;
+    });
+  });
+});
+
+test("listSessions names the corrupt file instead of dying on a bare JSON.parse error", async () => {
+  await withTempRepo(async (repoRoot) => {
+    await createSession(repoRoot, { task: "a", worktreePath: "/a", branchName: "b/a", maxIterations: 3 });
+    const stateDir = path.join(repoRoot, ".claude", "delegate", "state");
+    await writeFile(path.join(stateDir, "dlg_deadbeef0000.json"), "not json at all");
+    await assert.rejects(() => listSessions(repoRoot), /Corrupt delegate session state.*dlg_deadbeef0000\.json/);
   });
 });
 
