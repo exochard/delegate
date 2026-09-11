@@ -70,7 +70,7 @@ function resolveRepoRoot(repoRoot) {
   return repoRoot ? path.resolve(repoRoot) : process.cwd();
 }
 
-const server = new McpServer({ name: "delegate-server", version: "0.1.0" });
+const server = new McpServer({ name: "delegate-server", version: "0.3.0" });
 
 server.registerTool(
   "delegate_start",
