@@ -29,6 +29,7 @@ Run `/delegate:doctor` once you've installed everything — it'll tell you if an
 | `/delegate:reject <id>` | Throw the worktree and branch away. Your main tree was never touched. |
 | `/delegate:stop <id>` | Kill the running opencode worker, if one's in flight. The worktree sticks around so you can still inspect or resume it. |
 | `/delegate:config [key=value ...]` | Read or change defaults: model, iteration cap, verify command, what the worker's allowed to touch. |
+| `/delegate:gather "<question>"` | Read-only evidence gathering through Antigravity; every quote is re-checked against the file. |
 | `/delegate:doctor` | Sanity check: is opencode installed, is this a git repo, any stray worktrees lying around. |
 
 ## How it fits together
@@ -41,6 +42,15 @@ Verification runs your configured command if you've set one, otherwise whatever 
 
 Merging only happens when you run `/delegate:accept`.
 
+## Gather (read-only, via Antigravity)
+
+`/delegate:gather "<question>"` hands an evidence-gathering question to the Antigravity CLI (`agy`, Gemini) and returns structured findings: `path:line`, the verbatim line, and a short claim. It is not a worker: no worktree, no verification, nothing to merge.
+
+- Needs `agy` installed and signed in. `/delegate:doctor` reports `agy.installed`.
+- On first use it installs `~/.gemini/config/agents/delegate-gatherer-<model>.md` (one per model tier), a custom agent that agy finds from any directory. Nothing is written into your repo. The model tier (`flash` or `pro`) comes from the `gatherModel` config key, default `pro`.
+- Read-only by construction: agy runs in plan mode, shell execution is off, and the agent only has file-view, grep, list and find tools. If agy reports any denied action, the run counts as failed and the denied actions are named.
+- Every quote is re-checked against the file on disk (up to 3 lines of drift allowed). Findings whose path escapes the repo, whose file is missing, or whose quote does not match come back as `rejected` and are not to be trusted.
+
 ## Config
 
 `.claude/delegate/config.json` lives per-project and is gitignored:
@@ -49,6 +59,7 @@ Merging only happens when you run `/delegate:accept`.
 {
   "defaultModel": "provider/model or null",
   "maxIterations": 3,
+  "gatherModel": "flash | pro (default pro)",
   "verifyCommand": "optional override string, or null for auto-detect",
   "workerPermissions": {
     "bash": true, "read": true, "edit": true, "glob": true, "grep": true,

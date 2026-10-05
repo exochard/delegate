@@ -12,7 +12,7 @@
       "name": "delegate",
       "source": "./",
       "description": "Claude stays mastermind and reviewer while opencode does the grunt implementation work, in an isolated git worktree, for a fraction of the cost. Claude reviews, verifies, and decides accept/reject/iterate \u2014 nothing merges without an explicit accept.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "license": "MIT",
       "keywords": [
         "delegate",

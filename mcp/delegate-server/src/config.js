@@ -15,6 +15,7 @@ export const DEFAULT_CONFIG = {
   // delisted, and `opencode models` is the ground truth.
   defaultModel: DEFAULT_MODEL,
   maxIterations: 3,
+  gatherModel: "pro",
   verifyCommand: null,
   workerPermissions: {
     bash: true,

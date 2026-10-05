@@ -1,6 +1,6 @@
 {
   "name": "delegate-server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server backing the Delegate Claude Code plugin: manages opencode worker sessions, git worktrees, and verification.",
   "type": "module",
   "main": "src/index.js",

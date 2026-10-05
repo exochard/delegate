@@ -77,6 +77,7 @@ test("MCP server registers all delegate tools", async () => {
       "delegate_diff",
       "delegate_doctor",
       "delegate_feedback",
+      "delegate_gather",
       "delegate_reject",
       "delegate_review",
       "delegate_start",

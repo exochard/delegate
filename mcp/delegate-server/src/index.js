@@ -9,6 +9,8 @@ import * as verifyMod from "./verify.js";
 import * as reportMod from "./report.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { resolveWorker } from "./worker.js";
+import * as agy from "./agy.js";
+import { registerGatherTool } from "./gather.js";
 
 function truncate(text, max = 4000) {
   if (text.length <= max) return text;
@@ -70,7 +72,9 @@ function resolveRepoRoot(repoRoot) {
   return repoRoot ? path.resolve(repoRoot) : process.cwd();
 }
 
-const server = new McpServer({ name: "delegate-server", version: "0.3.0" });
+const server = new McpServer({ name: "delegate-server", version: "0.4.0" });
+
+registerGatherTool(server, { resolveRepoRoot, loadConfig });
 
 server.registerTool(
   "delegate_start",
@@ -414,6 +418,7 @@ server.registerTool(
       worker: z.string().optional().describe("Worker backend to run tasks with. Defaults to \"opencode\"."),
       defaultModel: z.string().nullable().optional(),
       maxIterations: z.number().int().positive().optional(),
+      gatherModel: z.enum(["flash", "pro"]).optional(),
       verifyCommand: z.string().nullable().optional(),
       workerPermissions: z
         .record(z.string(), z.boolean())
@@ -458,6 +463,7 @@ server.registerTool(
     report.worker = config.worker;
     // Kept under the `opencode` key: the slash commands and README read it by that name.
     report.opencode = await resolveWorker(config.worker).checkInstalled();
+    report.agy = await agy.checkInstalled();
 
     if (report.gitRepo) {
       const [worktrees, sessions] = await Promise.all([

@@ -2,6 +2,16 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## delegate 0.4.0 — 2026-10-05
+
+### Added
+
+- `/delegate:gather` and the `delegate_gather` tool: a read-only evidence lane served by the
+  Antigravity CLI (`agy`). It runs a dedicated `delegate-gatherer-<model>` agent in plan mode with shell
+  off and a file-reading tool allowlist, treats any denied action as a failed run, and re-checks
+  every returned quote against the file (±3 lines of drift) before reporting it as verified.
+- `gatherModel` config key (`flash` or `pro`, default `pro`) and an `agy` entry in `delegate_doctor`.
+
 ## delegate 0.3.0 — 2026-09-11
 
 ### Fixed
